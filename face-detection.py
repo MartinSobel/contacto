@@ -141,10 +141,66 @@ class BoxDrawer:
         for (x, y, w, h) in boxes:
             cv2.rectangle(frame, (x, y), (x + w, y + h), self.color, self.thickness)
 
+class HeadOrientationChecker:
+    """
+    Uses Haar Cascades to check if a face is oriented frontal by detecting eyes inside the face region.
+    """
+    def __init__(self, eye_cascade_path=None, min_eye_count=2):
+        # Load the Haar Cascade for eye detection
+        # If no path provided, use the default haarcascade_eye.xml from OpenCV data
+        if eye_cascade_path is None:
+            eye_cascade_path = cv2.data.haarcascades + "haarcascade_eye.xml"
+        self.eye_cascade = cv2.CascadeClassifier(eye_cascade_path)
+        # Minimum number of eyes to consider the face as frontal
+        self.min_eye_count = min_eye_count
+
+    def is_facing_camera(self, frame, box):
+        """
+        Given the full frame and a bounding box (x, y, w, h), return True
+        if the face in that box is likely looking forward (frontal).
+        We crop the box, convert to grayscale, and detect eyes inside it.
+        If we detect at least `min_eye_count` eyes, asumimos que es frontal.
+        """
+        frame_h, frame_w, _ = frame.shape
+        x, y, w, h = box
+
+        # Clamp coordinates to image boundaries
+        x1 = max(0, x)
+        y1 = max(0, y)
+        x2 = min(x + w, frame_w)
+        y2 = min(y + h, frame_h)
+        crop_w = x2 - x1
+        crop_h = y2 - y1
+
+        # If region is invalid, no podemos afirmar que mire frontal
+        if crop_w <= 0 or crop_h <= 0:
+            return False
+
+        # Crop the face region
+        face_img = frame[y1:y2, x1:x2]
+        if face_img is None or face_img.size == 0:
+            return False
+
+        # Convert to grayscale para aplicar Haar Cascade
+        gray = cv2.cvtColor(face_img, cv2.COLOR_BGR2GRAY)
+
+        # Ajustar parámetros de detectMultiScale según condiciones de iluminación/tamaño
+        eyes = self.eye_cascade.detectMultiScale(
+            gray,
+            scaleFactor=1.1,
+            minNeighbors=5,
+            minSize=(30, 30),
+            flags=cv2.CASCADE_SCALE_IMAGE
+        )
+
+        # Si detecta al menos `min_eye_count` ojos, asumimos que la cara está frontal
+        return len(eyes) >= self.min_eye_count
+
 class FaceSaver:
     """
     Saves each detected face region as an image file into a 'faces' directory,
-    but only once per unique person using histogram comparison.
+    pero sólo si el rostro está orientado frontal (por detección de ojos) y es nuevo.
+    Usa comparación por histogramas de escala de grises para detectar unicidad.
     """
     def __init__(self, output_dir="faces", hist_threshold=0.9):
         self.output_dir = output_dir
@@ -154,14 +210,17 @@ class FaceSaver:
         # List to store known face histograms
         self.known_histograms = []
 
-    def save(self, frame, boxes):
+    def save(self, frame, boxes, orientation_checker):
         """
-        Given the full frame and a list of bounding boxes (x, y, w, h),
-        crop each face region, compute its grayscale histogram, and save it
-        only if it's not similar to any previously saved face histogram.
+        Given the full frame, a list of bounding boxes (x, y, w, h) and a HeadOrientationChecker,
+        sólo guarda las caras que estén orientadas frontalmente y sean nuevas.
         """
         frame_h, frame_w, _ = frame.shape
         for (x, y, w, h) in boxes:
+            # Sólo seguimos si la cabeza está orientada frontal (detectamos ojos dentro del rostro)
+            if not orientation_checker.is_facing_camera(frame, (x, y, w, h)):
+                continue
+
             # Clamp coordinates to image boundaries
             x1 = max(0, x)
             y1 = max(0, y)
@@ -198,34 +257,35 @@ class FaceSaver:
             if not is_new:
                 continue
 
-            # If we reach here, it's a new face: save image and store histogram
+            # Si es una cara nueva y orientada frontalmente: guardamos
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
             filename = f"face_{timestamp}.png"
             filepath = os.path.join(self.output_dir, filename)
             cv2.imwrite(filepath, face_img)
-            print(f"Saved new face to {filepath}", flush=True)
+            print(f"Saved new face (frontal) to {filepath}", flush=True)
 
             # Store normalized histogram for future comparisons
             self.known_histograms.append(hist)
 
 class FaceBoxApp:
-    """Orchestrates webcam capture, face detection, drawing of boxes, and saving unique faces"""
-    def __init__(self, webcam, detector, drawer, saver):
+    """Orchestrates webcam capture, face detection, drawing of boxes, y guardado multicondicional"""
+    def __init__(self, webcam, detector, drawer, orientation_checker, saver):
         self.webcam = webcam
         self.detector = detector
         self.drawer = drawer
+        self.orientation_checker = orientation_checker
         self.saver = saver
 
     def run(self):
-        """Main loop: read frame, detect faces, save unique faces, draw boxes and display"""
+        """Main loop: read frame, detect faces, guardar sólo si frontal y nuevo, draw boxes y display"""
         try:
             while True:
                 frame = self.webcam.read()
                 boxes = self.detector.detect(frame)
 
-                # Save each detected face only if it's a new face (histogram-based)
+                # Guardar sólo si está orientado frontal y es nuevo
                 if boxes:
-                    self.saver.save(frame, boxes)
+                    self.saver.save(frame, boxes, self.orientation_checker)
 
                 # Debug: print number of faces detected
                 print(f"Detected {len(boxes)} face(s) in current frame", flush=True)
@@ -244,12 +304,12 @@ if __name__ == "__main__":
     try:
         # Instantiate components with higher resolution and long-range model
         cam = Webcam(src=0, width=1280, height=720)
-        # Aquí nms_threshold sigue en 0.3 (ajustá si necesitás)
         detector = FaceDetector(min_confidence=0.3, model_selection=1, nms_threshold=0.3)
         drawer = BoxDrawer(thickness=3)
-        # Hist_threshold de 0.9: rostros con correlación >= 0.9 se consideran mismos
+        # HeadOrientationChecker usa Haar Cascades para detectar ojos dentro del rostro
+        orientation_checker = HeadOrientationChecker(min_eye_count=2)
         saver = FaceSaver(output_dir="faces", hist_threshold=0.9)
-        app = FaceBoxApp(cam, detector, drawer, saver)
+        app = FaceBoxApp(cam, detector, drawer, orientation_checker, saver)
         app.run()
     except Exception as e:
         # Print any error to console
