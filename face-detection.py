@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
+import os
 import cv2  # type: ignore
+from datetime import datetime
 
 # Parche para protobuf: si GetMessageClass no existe, lo definimos usando symbol_database
 try:
@@ -9,7 +11,7 @@ try:
     if not hasattr(_message_factory, 'GetMessageClass'):
         _message_factory.GetMessageClass = lambda descriptor: _symbol_database.Default().GetPrototype(descriptor)
 except Exception as e:
-    # If the patch fails, emit a warning and let MediaPipe fall back (pero idealmente no debería fallar de nuevo)
+    # If the patch fails, emit a warning and let MediaPipe fall back
     print(f"Warning: failed to patch protobuf: {e}", flush=True)
 
 import mediapipe as mp  # type: ignore
@@ -71,11 +73,12 @@ class FaceDetector:
                 y = int(rel_bbox.ymin * h)
                 box_w = int(rel_bbox.width * w)
                 box_h = int(rel_bbox.height * h)
+                # Convert to (x1, y1, x2, y2) for NMS
                 boxes.append((x, y, x + box_w, y + box_h))
-                # detection.score es una lista, el primer elemento es la confianza
+                # detection.score is a list; the first element is the confidence
                 scores.append(detection.score[0])
 
-            # Apply Non-Maximum Suppression before devolver los cuadros finales
+            # Apply Non-Maximum Suppression before returning final boxes
             kept_indices = self._non_max_suppression(boxes, scores, self.nms_threshold)
             final_boxes = []
             for idx in kept_indices:
@@ -115,14 +118,14 @@ class FaceDetector:
                 yy1 = max(y1[i], y1[j])
                 xx2 = min(x2[i], x2[j])
                 yy2 = min(y2[i], y2[j])
-                w = max(0, xx2 - xx1 + 1)
-                h = max(0, yy2 - yy1 + 1)
-                inter = w * h
+                w_int = max(0, xx2 - xx1 + 1)
+                h_int = max(0, yy2 - yy1 + 1)
+                inter = w_int * h_int
                 union = areas[i] + areas[j] - inter
                 iou = inter / union if union > 0 else 0
                 if iou > iou_thresh:
                     suppress_list.append(j)
-            # Remove suprimidos de la lista de orden
+            # Remove suppressed indices from order
             order = [o for o in order if o not in suppress_list]
 
         return keep
@@ -138,21 +141,94 @@ class BoxDrawer:
         for (x, y, w, h) in boxes:
             cv2.rectangle(frame, (x, y), (x + w, y + h), self.color, self.thickness)
 
+class FaceSaver:
+    """
+    Saves each detected face region as an image file into a 'faces' directory,
+    but only once per unique person using histogram comparison.
+    """
+    def __init__(self, output_dir="faces", hist_threshold=0.9):
+        self.output_dir = output_dir
+        self.hist_threshold = hist_threshold  # Threshold for histogram correlation
+        # Create the directory if it doesn't exist
+        os.makedirs(self.output_dir, exist_ok=True)
+        # List to store known face histograms
+        self.known_histograms = []
+
+    def save(self, frame, boxes):
+        """
+        Given the full frame and a list of bounding boxes (x, y, w, h),
+        crop each face region, compute its grayscale histogram, and save it
+        only if it's not similar to any previously saved face histogram.
+        """
+        frame_h, frame_w, _ = frame.shape
+        for (x, y, w, h) in boxes:
+            # Clamp coordinates to image boundaries
+            x1 = max(0, x)
+            y1 = max(0, y)
+            x2 = min(x + w, frame_w)
+            y2 = min(y + h, frame_h)
+            crop_w = x2 - x1
+            crop_h = y2 - y1
+
+            # Skip invalid or empty regions
+            if crop_w <= 0 or crop_h <= 0:
+                continue
+
+            # Crop the face region from the frame
+            face_img = frame[y1:y2, x1:x2]
+            if face_img is None or face_img.size == 0:
+                continue
+
+            # Convert to grayscale
+            face_gray = cv2.cvtColor(face_img, cv2.COLOR_BGR2GRAY)
+
+            # Compute normalized histogram (256 bins)
+            hist = cv2.calcHist([face_gray], [0], None, [256], [0, 256])
+            cv2.normalize(hist, hist)
+
+            # Compare with known histograms
+            is_new = True
+            for known_hist in self.known_histograms:
+                correlation = cv2.compareHist(known_hist, hist, cv2.HISTCMP_CORREL)
+                if correlation >= self.hist_threshold:
+                    # Too similar to an existing face
+                    is_new = False
+                    break
+
+            if not is_new:
+                continue
+
+            # If we reach here, it's a new face: save image and store histogram
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+            filename = f"face_{timestamp}.png"
+            filepath = os.path.join(self.output_dir, filename)
+            cv2.imwrite(filepath, face_img)
+            print(f"Saved new face to {filepath}", flush=True)
+
+            # Store normalized histogram for future comparisons
+            self.known_histograms.append(hist)
+
 class FaceBoxApp:
-    """Orchestrates webcam capture, face detection and drawing of boxes"""
-    def __init__(self, webcam, detector, drawer):
+    """Orchestrates webcam capture, face detection, drawing of boxes, and saving unique faces"""
+    def __init__(self, webcam, detector, drawer, saver):
         self.webcam = webcam
         self.detector = detector
         self.drawer = drawer
+        self.saver = saver
 
     def run(self):
-        """Main loop: read frame, detect faces, draw boxes and display"""
+        """Main loop: read frame, detect faces, save unique faces, draw boxes and display"""
         try:
             while True:
                 frame = self.webcam.read()
                 boxes = self.detector.detect(frame)
+
+                # Save each detected face only if it's a new face (histogram-based)
+                if boxes:
+                    self.saver.save(frame, boxes)
+
                 # Debug: print number of faces detected
-                print(f"Detected {len(boxes)} face(s) in current frame")
+                print(f"Detected {len(boxes)} face(s) in current frame", flush=True)
                 self.drawer.draw(frame, boxes)
 
                 cv2.imshow("Face Boxes", frame)
@@ -168,10 +244,12 @@ if __name__ == "__main__":
     try:
         # Instantiate components with higher resolution and long-range model
         cam = Webcam(src=0, width=1280, height=720)
-        # Aquí cambiamos nms_threshold a 0.3 (puedes ajustar si aún detecta dos cuadros muy cercanos)
+        # Aquí nms_threshold sigue en 0.3 (ajustá si necesitás)
         detector = FaceDetector(min_confidence=0.3, model_selection=1, nms_threshold=0.3)
         drawer = BoxDrawer(thickness=3)
-        app = FaceBoxApp(cam, detector, drawer)
+        # Hist_threshold de 0.9: rostros con correlación >= 0.9 se consideran mismos
+        saver = FaceSaver(output_dir="faces", hist_threshold=0.9)
+        app = FaceBoxApp(cam, detector, drawer, saver)
         app.run()
     except Exception as e:
         # Print any error to console
