@@ -70,7 +70,7 @@ void searchTarget() {
 }
 
 void stab() {
-  int depth = random(40, 60);
+  int depth = random(40, 50);
 
   for (int pos = 0; pos <= depth; pos += 1) {
     SERVO_SHOULDER.write(pos);

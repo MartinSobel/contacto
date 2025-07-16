@@ -4,6 +4,7 @@ import time
 import cv2  # type: ignore
 import serial # type: ignore
 from datetime import datetime
+import numpy as np # type: ignore
 
 # Protobuf patch for MediaPipe compatibility
 try:
@@ -198,17 +199,29 @@ class FaceBoxApp:
 
     def run(self):
         try:
+            window_name = "Face Boxes"
+            cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+            cv2.resizeWindow(window_name, 1920, 1080)
+            # Opcional: fullscreen
+            # cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+            canvas_w, canvas_h = 1920, 1080
             while True:
                 frame = self.webcam.read()
-                boxes = self.detector.detect(frame)
+                rotated = cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
+                boxes = self.detector.detect(rotated)
                 detected = len(boxes) > 0
                 # Notify Arduino
                 self.communicator.send(detected)
                 if detected:
-                    self.saver.save(frame, boxes, self.orientation_checker)
+                    self.saver.save(rotated, boxes, self.orientation_checker)
                 # print(f"Detected {len(boxes)} face(s)", flush=True)
-                self.drawer.draw(frame, boxes)
-                cv2.imshow("Face Boxes", frame)
+                self.drawer.draw(rotated, boxes)
+                # Canvas fijo de 1920x1080
+                canvas = np.zeros((canvas_h, canvas_w, 3), dtype=np.uint8)
+                y_offset = (canvas_h - rotated.shape[0]) // 2
+                x_offset = (canvas_w - rotated.shape[1]) // 2
+                canvas[y_offset:y_offset+rotated.shape[0], x_offset:x_offset+rotated.shape[1]] = rotated
+                cv2.imshow(window_name, canvas)
                 if cv2.waitKey(1) & 0xFF in (ord('q'), 27):
                     break
         finally:
