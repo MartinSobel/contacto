@@ -34,16 +34,8 @@ void loop() {
   digitalWrite(LED_BUILTIN, faceDetected ? HIGH : LOW);
 
   if (faceDetected) {
-    int stabCount = random(1, 4);
-    Serial.print("Stab");
-    for (int i = 0; i < stabCount; i++) {
-      Serial.print("Starting stab ");
-      Serial.println(i);
-      stab();
-      Serial.print("Finished stab ");
-      Serial.println(i);
-      waitRandom(200, 800);
-    }
+    stab();
+    waitRandom(200, 800);
   } else {
     // Search for new target
     searchTarget();
