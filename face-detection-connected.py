@@ -5,6 +5,7 @@ import cv2  # type: ignore
 import serial # type: ignore
 from datetime import datetime
 import numpy as np # type: ignore
+import random  # Para posiciones aleatorias
 
 # Protobuf patch for MediaPipe compatibility
 try:
@@ -145,7 +146,9 @@ class FaceSaver:
             x2, y2 = min(x+w, w_img), min(y+h, h_img)
             if x2 <= x1 or y2 <= y1:
                 continue
-            face_img = frame[y1:y2, x1:x2]
+            face_img = frame[y1:y2, x1:x2].copy()
+            # Dibuja el borde verde en la cara guardada
+            cv2.rectangle(face_img, (0, 0), (face_img.shape[1]-1, face_img.shape[0]-1), (0, 255, 0), 3)
             gray = cv2.cvtColor(face_img, cv2.COLOR_BGR2GRAY)
             hist = cv2.calcHist([gray], [0], None, [256], [0,256])
             cv2.normalize(hist, hist)
@@ -196,6 +199,21 @@ class FaceBoxApp:
         self.orientation_checker = orientation_checker
         self.saver = saver
         self.communicator = communicator
+        self.face_thumb_size = 128  # Tamaño de las miniaturas de caras
+        self.max_faces = 10         # Máximo de caras a mostrar
+
+    def _load_face_thumbnails(self):
+        """Carga hasta max_faces imágenes de la carpeta de caras, redimensionadas."""
+        face_files = [f for f in os.listdir(self.saver.output_dir) if f.endswith('.png')]
+        face_files = sorted(face_files, reverse=True)[:self.max_faces]  # Últimas guardadas
+        thumbs = []
+        for fname in face_files:
+            path = os.path.join(self.saver.output_dir, fname)
+            img = cv2.imread(path)
+            if img is not None:
+                thumb = cv2.resize(img, (self.face_thumb_size, self.face_thumb_size))
+                thumbs.append(thumb)
+        return thumbs
 
     def run(self):
         try:
@@ -205,19 +223,51 @@ class FaceBoxApp:
             # Opcional: fullscreen
             # cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
             canvas_w, canvas_h = 1920, 1080
+            # --- Canvas persistente para el rastro ---
+            persistent_canvas = np.zeros((canvas_h, canvas_w, 3), dtype=np.uint8)
             while True:
                 frame = self.webcam.read()
                 rotated = cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
                 boxes = self.detector.detect(rotated)
                 detected = len(boxes) > 0
-                # Notify Arduino
                 self.communicator.send(detected)
                 if detected:
                     self.saver.save(rotated, boxes, self.orientation_checker)
-                # print(f"Detected {len(boxes)} face(s)", flush=True)
                 self.drawer.draw(rotated, boxes)
-                # Canvas fijo de 1920x1080
-                canvas = np.zeros((canvas_h, canvas_w, 3), dtype=np.uint8)
+
+                # --- Mostrar caras guardadas en posiciones aleatorias y dejar rastro ---
+                thumbs = self._load_face_thumbnails()
+                feed_x1 = (canvas_w - rotated.shape[1]) // 2
+                feed_y1 = (canvas_h - rotated.shape[0]) // 2
+                feed_x2 = feed_x1 + rotated.shape[1]
+                feed_y2 = feed_y1 + rotated.shape[0]
+                random_positions = []
+                for thumb in thumbs:
+                    for _ in range(20):
+                        x = random.randint(0, canvas_w - self.face_thumb_size)
+                        y = random.randint(0, canvas_h - self.face_thumb_size)
+                        thumb_x2 = x + self.face_thumb_size
+                        thumb_y2 = y + self.face_thumb_size
+                        overlap = not (thumb_x2 < feed_x1 or x > feed_x2 or thumb_y2 < feed_y1 or y > feed_y2)
+                        overlap_with_others = any(
+                            not (x + self.face_thumb_size < ox or x > ox + self.face_thumb_size or
+                                 y + self.face_thumb_size < oy or y > oy + self.face_thumb_size)
+                            for ox, oy in random_positions
+                        )
+                        if not overlap and not overlap_with_others:
+                            # Imprime la cara en el fondo persistente
+                            persistent_canvas[y:y+self.face_thumb_size, x:x+self.face_thumb_size] = thumb
+                            # Guarda la posición para este frame
+                            random_positions.append((x, y))
+                            break
+                # --- Fin mostrar caras guardadas ---
+
+                # Copia el canvas persistente para mostrar el feed y las caras en movimiento encima
+                canvas = persistent_canvas.copy()
+                # Dibuja las caras en movimiento en las posiciones de este frame
+                for thumb, (x, y) in zip(thumbs, random_positions):
+                    canvas[y:y+self.face_thumb_size, x:x+self.face_thumb_size] = thumb
+                # Centrar feed de cámara
                 y_offset = (canvas_h - rotated.shape[0]) // 2
                 x_offset = (canvas_w - rotated.shape[1]) // 2
                 canvas[y_offset:y_offset+rotated.shape[0], x_offset:x_offset+rotated.shape[1]] = rotated
