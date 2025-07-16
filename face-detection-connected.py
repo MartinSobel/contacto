@@ -2,13 +2,13 @@
 import os
 import time
 import cv2  # type: ignore
-import serial
+import serial # type: ignore
 from datetime import datetime
 
 # Protobuf patch for MediaPipe compatibility
 try:
-    import google.protobuf.message_factory as _message_factory
-    from google.protobuf import symbol_database as _symbol_database
+    import google.protobuf.message_factory as _message_factory # type: ignore
+    from google.protobuf import symbol_database as _symbol_database # type: ignore
     if not hasattr(_message_factory, 'GetMessageClass'):
         _message_factory.GetMessageClass = lambda descriptor: _symbol_database.Default().GetPrototype(descriptor)
 except Exception as e:
@@ -216,7 +216,7 @@ class FaceBoxApp:
             cv2.destroyAllWindows()
 
 if __name__ == "__main__":
-    SERIAL_PORT = "/dev/cu.usbserial-110"  # adjust to your port
+    SERIAL_PORT = "/dev/cu.usbserial-140"  # adjust to your port
     try:
         cam = Webcam(src=0, width=1280, height=720)
         detector = FaceDetector(min_confidence=0.3, model_selection=1, nms_threshold=0.3)

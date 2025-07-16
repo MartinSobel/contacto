@@ -2,7 +2,6 @@
 
 Servo SERVO_BASE;
 Servo SERVO_SHOULDER;
-Servo SERVO_HEIGHT;
 
 bool faceDetected = false;
 
@@ -11,16 +10,12 @@ void setup() {
   Serial.println("Arduino ready");
   pinMode(LED_BUILTIN, OUTPUT);
   
-  // Attach servos on pins 3,5,9 with valid pulse range
   SERVO_SHOULDER.attach(3, 500, 2500);
-  SERVO_BASE.attach(5,    500, 2500);
-  SERVO_HEIGHT.attach(9,  500, 2500);
+  SERVO_BASE.attach(5, 600, 2200);
 
-  randomSeed(analogRead(A0));
-
-  // Initial positions
-  SERVO_HEIGHT.write(180);
   SERVO_SHOULDER.write(0);
+  SERVO_BASE.write(90);
+  delay(5000);
 }
 
 void loop() {
@@ -36,14 +31,11 @@ void loop() {
     }
   }
 
-  // Debug LED: on when faceDetected==true
   digitalWrite(LED_BUILTIN, faceDetected ? HIGH : LOW);
 
   if (faceDetected) {
-    // Perform random number of stabs
     int stabCount = random(1, 4);
-    Serial.print("Stab count: ");
-    Serial.println(stabCount);
+    Serial.print("Stab");
     for (int i = 0; i < stabCount; i++) {
       Serial.print("Starting stab ");
       Serial.println(i);
@@ -60,8 +52,8 @@ void loop() {
 }
 
 void searchTarget() {
-  int targetPos = random(30, 150);
-  int speed     = random(3, 10);
+  int targetPos = random(0, 180);
+  int speed     = random(20, 30);
   int current   = SERVO_BASE.read();
 
   if (targetPos > current) {
@@ -78,17 +70,19 @@ void searchTarget() {
 }
 
 void stab() {
-  // Generate random depth and speed
-  int depth = random(40, 70);
-  int speed = random(80, 250);
-  Serial.print("Stab depth: ");
-  Serial.print(depth);
-  Serial.print(", speed: ");
-  Serial.println(speed);
+  int depth = random(40, 60);
 
-  // Move shoulder to depth and back to default 30°
-  SERVO_SHOULDER.write(depth);
-  delay(speed);
+  for (int pos = 0; pos <= depth; pos += 1) {
+    SERVO_SHOULDER.write(pos);
+    delay(5);
+  }
+
+  for (int pos = depth; pos >= 0; pos -= 1) {
+    SERVO_SHOULDER.write(pos);
+    delay(5);
+  }
+
+  delay(500);
   SERVO_SHOULDER.write(0);
 }
 
